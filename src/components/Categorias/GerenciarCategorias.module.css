@@ -1,0 +1,52 @@
+.panel { padding: 23px 25px; border: 1px solid var(--borda); border-radius: var(--raio-painel); background: var(--superficie); box-shadow: var(--sombra-painel); }
+.panelHeader { display: flex; align-items: center; justify-content: space-between; gap: 15px; margin-bottom: 19px; }
+.eyebrow { color: var(--verde-claro); font-size: .7rem; font-weight: 700; letter-spacing: .15em; }
+.panelHeader h2 { margin-top: 4px; color: var(--texto); font-family: Georgia, "Times New Roman", serif; font-size: 1.3rem; font-weight: 500; }
+.count { min-width: 35px; padding: 4px 10px; border-radius: 999px; background: var(--superficie-suave); color: var(--texto-secundario); font-size: .8rem; text-align: center; }
+.createForm { display: grid; grid-template-columns: minmax(0, 1fr) 150px auto; align-items: end; gap: 8px 12px; }
+.createForm label { color: var(--texto-secundario); font-size: .8rem; font-weight: 700; }
+.createForm input, .createForm select, .renameForm input {
+    width: 100%;
+    min-width: 0;
+    min-height: 43px;
+    padding: 8px 10px;
+    border: 1px solid var(--borda);
+    border-radius: var(--raio-controle);
+    background: var(--superficie-controle);
+    color: var(--texto);
+}
+.createForm button, .renameForm button[type="submit"] {
+    min-height: 43px;
+    padding: 8px 14px;
+    border: 0;
+    border-radius: var(--raio-controle);
+    background: var(--verde);
+    color: var(--superficie);
+    font-size: .82rem;
+    font-weight: 700;
+}
+.categoryGroups { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; margin: 25px 0 0; padding: 0; list-style: none; }
+.categoryGroup h3 { margin-bottom: 7px; color: var(--texto-secundario); font-size: .83rem; }
+.categoryRow { display: flex; min-height: 48px; align-items: center; gap: 9px; border-top: 1px solid var(--borda-suave); }
+.categoryRow > span { overflow: hidden; color: var(--texto); font-size: .86rem; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.categoryRow small { flex-shrink: 0; color: var(--texto-fraco); font-size: .72rem; }
+.actions { display: flex; gap: 5px; margin-left: auto; }
+.secondaryButton, .deleteButton { min-height: 33px; padding: 5px 9px; border: 1px solid var(--borda); border-radius: 8px; background: var(--superficie-controle); color: var(--texto-secundario); font-size: .73rem; }
+.secondaryButton:hover:not(:disabled) { border-color: var(--verde-claro); color: var(--verde); }
+.deleteButton:hover:not(:disabled) { border-color: var(--vermelho-negativo); color: var(--vermelho-negativo); }
+.renameForm { display: grid; width: 100%; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 6px; }
+.feedback { margin-top: 12px; color: var(--verde-positivo); font-size: .83rem; }
+.visuallyHidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
+
+@media (max-width: 640px) {
+    .panel { padding: 19px; }
+    .createForm { grid-template-columns: minmax(0, 1fr) minmax(120px, .55fr); }
+    .createForm button { grid-column: 1 / -1; }
+    .categoryGroups { grid-template-columns: 1fr; gap: 17px; }
+}
+
+@media (max-width: 390px) {
+    .categoryRow { flex-wrap: wrap; padding: 7px 0; }
+    .categoryRow > span { max-width: 45%; }
+    .actions { flex-basis: 100%; justify-content: flex-end; }
+}

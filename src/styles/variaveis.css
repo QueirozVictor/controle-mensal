@@ -1,0 +1,13 @@
+:root {
+    --largura-conteudo: 1120px;
+    --raio-painel: 22px;
+    --raio-controle: 11px;
+    --sombra-painel: 0 8px 26px rgb(38 57 45 / 5%);
+
+    --verde-positivo: #16845a;
+    --vermelho-negativo: #b95448;
+    --laranja-categoria: #e89a3d;
+    --azul-categoria: #4e82d8;
+    --roxo-categoria: #9a68bd;
+    --progresso-meta: #4bbe8d;
+}
