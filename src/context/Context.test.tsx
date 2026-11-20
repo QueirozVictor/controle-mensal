@@ -1,238 +1,146 @@
-import { renderHook, act } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { useContext } from "react";
 import { Provider, context } from "./Context";
-import type { Entrada } from "@/types/types";
+import { MemoryCategoriaRepository, MemoryMetaRepository, MemoryRegistroRepository } from "@/test/memoryRepositories";
+import type { Categoria, ContextType, ResultadoCriacao } from "@/types/types";
 
-describe("Context - CRUD", () => {
+function harness(categoriasRepository = new MemoryCategoriaRepository(), repository = new MemoryRegistroRepository(), metasRepository = new MemoryMetaRepository()) {
+    const wrapper = ({ children }: { children: React.ReactNode }) => <Provider repository={repository} categoriasRepository={categoriasRepository} metasRepository={metasRepository}>{children}</Provider>;
+    const hook = renderHook(() => useContext(context), { wrapper });
+    return { ...hook, repository, categoriasRepository, metasRepository };
+}
 
-    const wrapper = ({ children }: { children: React.ReactNode }) => (
-        <Provider>{children}</Provider>
-    );
+async function aguardarDisponibilidade(result: { current: ContextType | null }) {
+    await waitFor(() => expect(result.current?.statusPersistencia).toBe("disponivel"));
+}
 
-    beforeEach(() => {
-        localStorage.clear();
+describe("Provider: regras e operações", () => {
+    it("carrega as três fontes antes de habilitar operações", async () => {
+        const h = harness();
+        expect(h.result.current?.statusPersistencia).toBe("carregando");
+        await aguardarDisponibilidade(h.result);
+        expect(h.result.current?.categorias.length).toBeGreaterThan(0);
     });
 
-    // ADICIONAR REGISTRO
-    it("deve adicionar um registro válido", () => {
-        const { result } = renderHook(
-            () => useContext(context),
-            { wrapper }
-        );
-
-        const novoRegistro: Entrada = {
-            tipo: "receita",
-            categoriaId: "salario",
-            descricao: "Salário",
-            valor: 3000,
-            data: "2026-11-19",
-        };
-
-        act(() => {
-            result.current?.adicionarRegistro(novoRegistro);
-        });
-
-        expect(result.current?.registros).toHaveLength(1);
-
-        expect(result.current?.registros[0]).toMatchObject({
-            tipo: "receita",
-            descricao: "Salário",
-            valor: 3000,
-        });
-
-        expect(result.current?.registros[0].id).toBeTruthy();
+    it("cria lançamento válido, normaliza texto e gera ID", async () => {
+        const h = harness(); await aguardarDisponibilidade(h.result);
+        let resultado!: ResultadoCriacao;
+        await act(async () => { resultado = await h.result.current!.adicionarRegistro({ tipo: "despesa", categoriaId: "alimentacao", descricao: " Mercado ", valor: 15, data: "2026-11-19" }); });
+        expect(resultado.sucesso).toBe(true);
+        expect(h.result.current?.registros[0]).toMatchObject({ id: expect.any(String), descricao: "Mercado", categoriaId: "alimentacao", valor: 15 });
+        expect(h.repository.dados).toHaveLength(1);
     });
 
-    it("não deve adicionar um registro inválido", () => {
-        const { result } = renderHook(
-            () => useContext(context),
-            { wrapper }
-        );
-
-        const registroInvalido = {
-            tipo: "despesa",
-            descricao: "Mercado",
-            valor: -100,
-        } as Entrada;
-
-        act(() => {
-            result.current?.adicionarRegistro(registroInvalido);
+    it("rejeita dados inválidos e categoria que não corresponde ao tipo", async () => {
+        const h = harness(); await aguardarDisponibilidade(h.result);
+        let inválido!: { sucesso: boolean };
+        let incompatível!: { sucesso: boolean; erro?: string };
+        await act(async () => {
+            inválido = await h.result.current!.adicionarRegistro({ tipo: "despesa", categoriaId: "alimentacao", descricao: "Ruim", valor: -2, data: "2026-11-19" });
+            incompatível = await h.result.current!.adicionarRegistro({ tipo: "despesa", categoriaId: "salario", descricao: "Categoria errada", valor: 2, data: "2026-11-19" });
         });
-
-        expect(result.current?.registros).toHaveLength(0);
+        expect(inválido.sucesso).toBe(false);
+        expect(incompatível).toMatchObject({ sucesso: false, erro: expect.stringContaining("categoria") });
+        expect(h.result.current?.registros).toEqual([]);
     });
 
-    it("deve gerar IDs diferentes para registros diferentes", () => {
-        const { result } = renderHook(
-            () => useContext(context),
-            { wrapper }
-        );
-
-        act(() => {
-            result.current?.adicionarRegistro({
-                tipo: "receita",
-                descricao: "Salário",
-                valor: 3000,
-            });
-
-            result.current?.adicionarRegistro({
-                tipo: "despesa",
-                descricao: "Mercado",
-                valor: 500,
-            });
-        });
-
-        const registros = result.current?.registros;
-
-        expect(registros).toHaveLength(2);
-        expect(registros?.[0].id).not.toBe(registros?.[1].id);
+    it("serializa gravações concorrentes sem perder lançamentos", async () => {
+        const h = harness(); await aguardarDisponibilidade(h.result);
+        await act(async () => { await Promise.all([
+            h.result.current!.adicionarRegistro({ tipo: "despesa", categoriaId: "alimentacao", descricao: "A", valor: 1, data: "2026-11-19" }),
+            h.result.current!.adicionarRegistro({ tipo: "receita", categoriaId: "salario", descricao: "B", valor: 2, data: "2026-11-19" }),
+        ]); });
+        expect(h.result.current?.registros).toHaveLength(2);
+        expect(h.repository.dados).toHaveLength(2);
     });
 
-    // ATUALIZAR REGISTRO
-    it("deve atualizar um registro existente", () => {
-        const { result } = renderHook(
-            () => useContext(context),
-            { wrapper }
-        );
-
-        act(() => {
-            result.current?.adicionarRegistro({
-                tipo: "despesa",
-                descricao: "Mercado",
-                valor: 500,
-            });
+    it("atualiza preservando ID e rejeita alteração de registro inexistente", async () => {
+        const repository = new MemoryRegistroRepository();
+        repository.dados = [{ id: "r1", tipo: "despesa", categoriaId: "alimentacao", descricao: "Mercado", valor: 10, data: "2026-11-19" }];
+        const h = harness(new MemoryCategoriaRepository(), repository); await aguardarDisponibilidade(h.result);
+        let resultado!: { sucesso: boolean };
+        let inexistente!: { sucesso: boolean };
+        await act(async () => {
+            resultado = await h.result.current!.atualizarRegistro("r1", { tipo: "despesa", categoriaId: "alimentacao", descricao: "Compras", valor: 20, data: "2026-11-20" });
+            inexistente = await h.result.current!.atualizarRegistro("ausente", { tipo: "despesa", categoriaId: "alimentacao", descricao: "Compras", valor: 20, data: "2026-11-20" });
         });
-
-        const registroId = result.current!.registros[0].id;
-
-        act(() => {
-            result.current?.atualizarRegistro(registroId, {
-                tipo: "despesa",
-                descricao: "Supermercado",
-                valor: 650,
-            });
-        });
-
-        expect(result.current?.registros[0]).toMatchObject({
-            id: registroId,
-            tipo: "despesa",
-            descricao: "Supermercado",
-            valor: 650,
-        });
+        expect(resultado.sucesso).toBe(true);
+        expect(h.result.current?.registros).toEqual([{ id: "r1", tipo: "despesa", categoriaId: "alimentacao", descricao: "Compras", valor: 20, data: "2026-11-20" }]);
+        expect(inexistente.sucesso).toBe(false);
     });
 
-    it("deve preservar o ID original durante a atualização", () => {
-        const { result } = renderHook(
-            () => useContext(context),
-            { wrapper }
-        );
-
-        act(() => {
-            result.current?.adicionarRegistro({
-                tipo: "receita",
-                descricao: "Salário",
-                valor: 3000,
-            });
-        });
-
-        const idOriginal = result.current!.registros[0].id;
-
-        act(() => {
-            result.current?.atualizarRegistro(idOriginal, {
-                tipo: "receita",
-                descricao: "Salário atualizado",
-                valor: 3500,
-            });
-        });
-
-        expect(result.current?.registros[0].id).toBe(idOriginal);
+    it("exclui apenas registro existente", async () => {
+        const repository = new MemoryRegistroRepository();
+        repository.dados = [{ id: "r1", tipo: "despesa", categoriaId: "alimentacao", descricao: "Mercado", valor: 10, data: "2026-11-19" }];
+        const h = harness(new MemoryCategoriaRepository(), repository); await aguardarDisponibilidade(h.result);
+        await act(async () => { await h.result.current!.deletarRegistro("r1"); });
+        expect(h.result.current?.registros).toEqual([]);
+        expect(repository.dados).toEqual([]);
     });
 
-    it("não deve modificar outros registros durante uma atualização", () => {
-        const { result } = renderHook(
-            () => useContext(context),
-            { wrapper }
-        );
-
-        act(() => {
-            result.current?.adicionarRegistro({
-                tipo: "receita",
-                descricao: "Salário",
-                valor: 3000,
-            });
-
-            result.current?.adicionarRegistro({
-                tipo: "despesa",
-                descricao: "Mercado",
-                valor: 500,
-            });
+    it("cria categoria e impede nomes duplicados ignorando caixa e espaços", async () => {
+        const h = harness(); await aguardarDisponibilidade(h.result);
+        let criada!: { sucesso: boolean; categoria?: Categoria };
+        let duplicada!: { sucesso: boolean };
+        await act(async () => {
+            criada = await h.result.current!.criarCategoria({ nome: "Pets", tipo: "despesa" });
+            duplicada = await h.result.current!.criarCategoria({ nome: " pets ", tipo: "despesa" });
         });
-
-        const segundoRegistro = result.current!.registros[1];
-
-        act(() => {
-            result.current?.atualizarRegistro(
-                result.current!.registros[0].id,
-                {
-                    tipo: "receita",
-                    descricao: "Novo salário",
-                    valor: 4000,
-                }
-            );
-        });
-
-        expect(result.current?.registros[1]).toEqual(segundoRegistro);
+        expect(criada.sucesso).toBe(true);
+        expect(criada.categoria?.nome).toBe("Pets");
+        expect(duplicada.sucesso).toBe(false);
     });
 
-    // EXCLUIR REGISTRO
-    it("deve excluir um registro existente", () => {
-        const { result } = renderHook(
-            () => useContext(context),
-            { wrapper }
-        );
-
-        act(() => {
-            result.current?.adicionarRegistro({
-                tipo: "despesa",
-                descricao: "Mercado",
-                valor: 500,
-            });
-
-            result.current?.adicionarRegistro({
-                tipo: "receita",
-                descricao: "Salário",
-                valor: 3000,
-            });
+    it("renomeia categoria e impede conflito de nome", async () => {
+        const h = harness(); await aguardarDisponibilidade(h.result);
+        let renomeada!: { sucesso: boolean };
+        let conflito!: { sucesso: boolean };
+        await act(async () => {
+            renomeada = await h.result.current!.renomearCategoria("alimentacao", "Comida");
+            conflito = await h.result.current!.renomearCategoria("lazer", " moradia ");
         });
-
-        const registroId = result.current!.registros[0].id;
-
-        act(() => {
-            result.current?.deletarRegistro(registroId);
-        });
-
-        expect(result.current?.registros).toHaveLength(1);
-        expect(result.current?.registros[0].descricao).toBe("Salário");
+        expect(renomeada.sucesso).toBe(true);
+        expect(h.result.current?.categorias.find((categoria) => categoria.id === "alimentacao")?.nome).toBe("Comida");
+        expect(conflito.sucesso).toBe(false);
     });
 
-    it("não deve excluir registros quando o ID não existir", () => {
-        const { result } = renderHook(
-            () => useContext(context),
-            { wrapper }
-        );
+    it("impede excluir categoria em uso ou a última do tipo", async () => {
+        const categoriasRepository = new MemoryCategoriaRepository();
+        const h = harness(categoriasRepository); await aguardarDisponibilidade(h.result);
+        await act(async () => { await h.result.current!.adicionarRegistro({ tipo: "despesa", categoriaId: "alimentacao", descricao: "Compra", valor: 5, data: "2026-11-19" }); });
+        let emUso!: { sucesso: boolean };
+        await act(async () => { emUso = await h.result.current!.excluirCategoria("alimentacao"); });
+        expect(emUso.sucesso).toBe(false);
 
-        act(() => {
-            result.current?.adicionarRegistro({
-                tipo: "despesa",
-                descricao: "Mercado",
-                valor: 500,
-            });
-        });
+        categoriasRepository.dados = [
+            { id: "uma-despesa", nome: "Única despesa", tipo: "despesa" },
+            { id: "uma-receita", nome: "Única receita", tipo: "receita" },
+        ];
+        const outro = harness(categoriasRepository); await aguardarDisponibilidade(outro.result);
+        let ultima!: { sucesso: boolean };
+        await act(async () => { ultima = await outro.result.current!.excluirCategoria("uma-despesa"); });
+        expect(ultima.sucesso).toBe(false);
+    });
 
-        act(() => {
-            result.current?.deletarRegistro("id-inexistente");
-        });
+    it("cria, substitui e remove metas mensais validando competência e centavos", async () => {
+        const h = harness(); await aguardarDisponibilidade(h.result);
+        await act(async () => { await h.result.current!.definirMeta("2026-11", 500.25); });
+        expect(h.result.current?.metas).toEqual([{ competencia: "2026-11", valor: 500.25 }]);
+        let inválida!: { sucesso: boolean };
+        await act(async () => { inválida = await h.result.current!.definirMeta("2026-13", -1); });
+        expect(inválida.sucesso).toBe(false);
+        await act(async () => { await h.result.current!.definirMeta("2026-11", 0); });
+        expect(h.result.current?.metas).toEqual([]);
+    });
 
-        expect(result.current?.registros).toHaveLength(1);
+    it("mantém dados em memória sem declarar sucesso quando a gravação falha", async () => {
+        const repository = new MemoryRegistroRepository();
+        repository.salvar = async () => { throw new Error("Falha simulada"); };
+        const h = harness(new MemoryCategoriaRepository(), repository); await aguardarDisponibilidade(h.result);
+        let resultado!: { sucesso: boolean };
+        await act(async () => { resultado = await h.result.current!.adicionarRegistro({ tipo: "despesa", categoriaId: "alimentacao", descricao: "Compra", valor: 5, data: "2026-11-19" }); });
+        expect(resultado.sucesso).toBe(false);
+        expect(h.result.current?.registros).toEqual([]);
+        expect(h.result.current?.erroPersistencia).toBe("Falha simulada");
     });
 });

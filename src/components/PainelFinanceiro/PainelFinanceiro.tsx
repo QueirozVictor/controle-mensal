@@ -1,28 +1,51 @@
 "use client";
 
-import { useContext, useEffect, useRef, useState, type FormEvent } from "react";
+import { useContext, useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
 import { context } from "@/context/Context";
 import Formulario from "@/components/Formulario/Formulario";
 import GerenciarCategorias from "@/components/Categorias/GerenciarCategorias";
 import { calcularResumoMensal } from "@/domain/resumoFinanceiro";
-import { dataLocalISO } from "@/utils/validarRegistro";
+import { useDataLocalISO } from "@/hooks/useDataLocalISO";
 import type { Registro } from "@/types/types";
 import styles from "./PainelFinanceiro.module.css";
 
 const moeda = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" });
 type Pagina = "inicio" | "lancamentos" | "resumo";
+let temaEmMemoria: "claro" | "escuro" | null = null;
+
+function lerTema(): "claro" | "escuro" {
+    try {
+        const salvo = window.localStorage.getItem("controle-mensal:tema");
+        if (salvo === "claro" || salvo === "escuro") return salvo;
+    } catch { /* Usa a preferência do sistema se o armazenamento estiver indisponível. */ }
+    return temaEmMemoria ?? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "escuro" : "claro");
+}
+
+function assinarTema(atualizar: () => void) {
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    window.addEventListener("storage", atualizar);
+    window.addEventListener("controle-mensal:tema-alterado", atualizar);
+    media.addEventListener("change", atualizar);
+    return () => {
+        window.removeEventListener("storage", atualizar);
+        window.removeEventListener("controle-mensal:tema-alterado", atualizar);
+        media.removeEventListener("change", atualizar);
+    };
+}
 
 export default function PainelFinanceiro({ pagina }: { pagina: Pagina }) {
     const dados = useContext(context);
     if (!dados) throw new Error("PainelFinanceiro precisa estar dentro do Provider");
     const { registros, categorias, metas, statusPersistencia, erroPersistencia, deletarRegistro, definirMeta } = dados;
-    const [competencia, setCompetencia] = useState("2000-01");
+    const dataAtual = useDataLocalISO();
+    const [competenciaSelecionada, setCompetenciaSelecionada] = useState<string | null>(null);
+    const competencia = competenciaSelecionada ?? (dataAtual ? dataAtual.slice(0, 7) : "2000-01");
     const [filtroTipo, setFiltroTipo] = useState("todos");
     const [filtroCategoria, setFiltroCategoria] = useState("todas");
     const [registroEditar, setRegistroEditar] = useState<Registro | null>(null);
     const [metaInput, setMetaInput] = useState("");
     const [mensagemMeta, setMensagemMeta] = useState<string | null>(null);
-    const [tema, setTema] = useState<"claro" | "escuro">("claro");
+    const tema = useSyncExternalStore(assinarTema, lerTema, (): "claro" | "escuro" => "claro");
     const seletorMesRef = useRef<HTMLInputElement>(null);
     const metaAtual = metas.find((meta) => meta.competencia === competencia)?.valor ?? 0;
     const resumo = calcularResumoMensal(registros, competencia);
@@ -37,20 +60,14 @@ export default function PainelFinanceiro({ pagina }: { pagina: Pagina }) {
     const competenciaLegivel = new Intl.DateTimeFormat("pt-BR", { month: "long", year: "numeric" }).format(new Date(`${competencia}-02T12:00:00`));
 
     useEffect(() => {
-        setCompetencia(dataLocalISO().slice(0, 7));
-        const temaSalvo = window.localStorage.getItem("controle-mensal:tema");
-        const temaInicial = temaSalvo === "claro" || temaSalvo === "escuro"
-            ? temaSalvo
-            : window.matchMedia("(prefers-color-scheme: dark)").matches ? "escuro" : "claro";
-        setTema(temaInicial);
-        document.documentElement.dataset.tema = temaInicial;
-    }, []);
+        document.documentElement.dataset.tema = tema;
+    }, [tema]);
 
     function alternarTema() {
         const novoTema = tema === "claro" ? "escuro" : "claro";
-        setTema(novoTema);
-        document.documentElement.dataset.tema = novoTema;
-        window.localStorage.setItem("controle-mensal:tema", novoTema);
+        temaEmMemoria = novoTema;
+        try { window.localStorage.setItem("controle-mensal:tema", novoTema); } catch { /* Mantém o tema durante esta sessão. */ }
+        window.dispatchEvent(new Event("controle-mensal:tema-alterado"));
     }
 
     function abrirSeletorMes() {
@@ -66,7 +83,7 @@ export default function PainelFinanceiro({ pagina }: { pagina: Pagina }) {
 
     function alterarCompetencia(valor: string) {
         const competenciaValida = /^\d{4}-(0[1-9]|1[0-2])$/.test(valor);
-        setCompetencia(competenciaValida ? valor : dataLocalISO().slice(0, 7));
+        setCompetenciaSelecionada(competenciaValida ? valor : null);
         setMensagemMeta(null);
     }
 
@@ -75,7 +92,7 @@ export default function PainelFinanceiro({ pagina }: { pagina: Pagina }) {
         await deletarRegistro(id);
     }
 
-    async function salvarMeta(e: React.SubmitEvent<HTMLFormElement>) {
+    async function salvarMeta(e: FormEvent<HTMLFormElement>) {
         e.preventDefault();
         const valor = metaInput === "" ? metaAtual : Number(metaInput);
         const resultado = await definirMeta(competencia, valor);

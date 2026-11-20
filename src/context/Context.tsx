@@ -20,15 +20,9 @@ export function Provider({
     categoriasRepository?: CategoriaRepository;
     metasRepository?: MetaRepository;
 }) {
-    const registrosRepoRef = useRef<RegistroRepository | null>(null);
-    const categoriasRepoRef = useRef<CategoriaRepository | null>(null);
-    const metasRepoRef = useRef<MetaRepository | null>(null);
-    if (!registrosRepoRef.current) registrosRepoRef.current = repository ?? new LocalStorageRegistroRepository();
-    if (!categoriasRepoRef.current) categoriasRepoRef.current = categoriasRepository ?? new LocalStorageCategoriaRepository();
-    if (!metasRepoRef.current) metasRepoRef.current = metasRepository ?? new LocalStorageMetaRepository();
-    const registrosRepo = registrosRepoRef.current;
-    const categoriasRepo = categoriasRepoRef.current;
-    const metasRepo = metasRepoRef.current;
+    const [registrosRepo] = useState<RegistroRepository>(() => repository ?? new LocalStorageRegistroRepository());
+    const [categoriasRepo] = useState<CategoriaRepository>(() => categoriasRepository ?? new LocalStorageCategoriaRepository());
+    const [metasRepo] = useState<MetaRepository>(() => metasRepository ?? new LocalStorageMetaRepository());
 
     const [registros, setRegistros] = useState<Registro[]>([]);
     const registrosRef = useRef<Registro[]>([]);

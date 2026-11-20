@@ -1,444 +1,79 @@
-import { renderHook, act, waitFor } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { useContext } from "react";
 import { Provider, context } from "./Context";
+import type { ContextType, Registro } from "@/types/types";
 
-function prepararFalhaDeLeitura() {
-    const dadosOriginais = JSON.stringify([
-        {
-            id: "registro-1",
-            tipo: "receita",
-            descricao: "Salário",
-            valor: 5000,
-        },
-    ]);
+const registro: Registro = { id: "r1", tipo: "receita", categoriaId: "salario", descricao: "Salário", valor: 3000, data: "2026-11-19" };
 
-    localStorage.setItem("registros", dadosOriginais);
-
-    const getItemSpy = jest
-        .spyOn(Storage.prototype, "getItem")
-        .mockImplementation(() => {
-            throw new Error("Falha simulada de leitura");
-        });
-
-    const setItemSpy = jest.spyOn(Storage.prototype, "setItem");
-
-    jest.spyOn(console, "error").mockImplementation(() => {});
-
-    return {
-        dadosOriginais,
-        getItemSpy,
-        setItemSpy,
-    };
+function montarProvider() {
+    const wrapper = ({ children }: { children: React.ReactNode }) => <Provider>{children}</Provider>;
+    return renderHook(() => useContext(context), { wrapper });
 }
 
-describe("Context - Persistência", () => {
+async function esperarPronto(result: { current: ContextType | null }) {
+    await waitFor(() => expect(result.current?.statusPersistencia).toBe("disponivel"));
+}
 
-    const wrapper = ({ children }: { children: React.ReactNode }) => (
-        <Provider>{children}</Provider>
-    );
+describe("Provider e armazenamento local", () => {
+    beforeEach(() => localStorage.clear());
 
-    const registroSalvo = {
-        id: "registro-1",
-        tipo: "receita",
-        descricao: "Salário",
-        valor: 3000,
-    };
-
-    beforeEach(() => {
-        localStorage.clear();
+    it("carrega dados no formato versionado atual", async () => {
+        localStorage.setItem("controle-financeiro.registros", JSON.stringify({ versao: 3, registros: [registro] }));
+        const hook = montarProvider();
+        await waitFor(() => expect(hook.result.current?.registros).toEqual([registro]));
+        expect(hook.result.current?.statusPersistencia).toBe("disponivel");
     });
 
-    afterEach(() => {
-    jest.restoreAllMocks();
+    it("migra a lista da versão antiga e grava o novo envelope", async () => {
+        const legado = [{ id: "r-antigo", tipo: "despesa", categoria: "outros", descricao: "Café", valor: 8, data: "2026-11-19" }];
+        localStorage.setItem("registros", JSON.stringify(legado));
+        const hook = montarProvider();
+        await waitFor(() => expect(hook.result.current?.statusPersistencia).toBe("disponivel"));
+        expect(hook.result.current?.registros).toMatchObject([{ id: "r-antigo", categoriaId: "outros-despesa" }]);
+        expect(JSON.parse(localStorage.getItem("controle-financeiro.registros") ?? "null").versao).toBe(3);
     });
 
-    // RECUPERAÇÃO
-    it("deve recuperar os registros salvos no localStorage", async () => {
-        localStorage.setItem(
-            "registros",
-            JSON.stringify([registroSalvo])
-        );
-
-        const { result } = renderHook(
-            () => useContext(context),
-            { wrapper }
-        );
-
-        await waitFor(() => {
-            expect(result.current?.registros).toHaveLength(1);
-        });
-
-        expect(result.current?.registros[0]).toEqual(registroSalvo);
+    it("não sobrescreve dados corrompidos e expõe status de erro", async () => {
+        const corrompido = "{json incompleto";
+        localStorage.setItem("controle-financeiro.registros", corrompido);
+        const hook = montarProvider();
+        await waitFor(() => expect(hook.result.current?.statusPersistencia).toBe("erro"));
+        expect(hook.result.current?.erroPersistencia).toBeTruthy();
+        expect(localStorage.getItem("controle-financeiro.registros")).toBe(corrompido);
     });
 
-    // ADIÇÃO
-    it("deve salvar um novo registro no localStorage", async () => {
-        const { result } = renderHook(
-            () => useContext(context),
-            { wrapper }
-        );
-
-        act(() => {
-            result.current?.adicionarRegistro({
-                tipo: "despesa",
-                descricao: "Mercado",
-                valor: 500,
-            });
+    it("bloqueia gravação se uma operação for chamada antes de carregar", async () => {
+        let liberar!: (registros: Registro[]) => void;
+        const repository = {
+            carregar: () => new Promise<Registro[]>((resolve) => { liberar = resolve; }),
+            salvar: jest.fn().mockResolvedValue(undefined),
+        };
+        const wrapper = ({ children }: { children: React.ReactNode }) => <Provider repository={repository}>{children}</Provider>;
+        const hook = renderHook(() => useContext(context), { wrapper });
+        let resultado!: { sucesso: boolean };
+        await act(async () => {
+            resultado = await hook.result.current!.adicionarRegistro({ tipo: "receita", categoriaId: "salario", descricao: "Salário", valor: 10, data: "2026-11-19" });
         });
-
-        await waitFor(() => {
-            const registrosSalvos = JSON.parse(
-                localStorage.getItem("registros") || "[]"
-            );
-
-            expect(registrosSalvos).toHaveLength(1);
-            expect(registrosSalvos[0]).toMatchObject({
-                tipo: "despesa",
-                descricao: "Mercado",
-                valor: 500,
-            });
-        });
+        expect(resultado.sucesso).toBe(false);
+        expect(repository.salvar).not.toHaveBeenCalled();
+        await act(async () => { liberar([]); });
+        await waitFor(() => expect(hook.result.current?.statusPersistencia).toBe("disponivel"));
     });
 
-    // ATUALIZAÇÃO
-    it("deve persistir a atualização de um registro", async () => {
-        localStorage.setItem(
-            "registros",
-            JSON.stringify([registroSalvo])
-        );
-
-        const { result } = renderHook(
-            () => useContext(context),
-            { wrapper }
-        );
-
-        await waitFor(() => {
-            expect(result.current?.registros).toHaveLength(1);
-        });
-
-        act(() => {
-            result.current?.atualizarRegistro("registro-1", {
-                tipo: "receita",
-                descricao: "Salário atualizado",
-                valor: 3500,
-            });
-        });
-
-        await waitFor(() => {
-            const registrosSalvos = JSON.parse(
-                localStorage.getItem("registros") || "[]"
-            );
-
-            expect(registrosSalvos[0]).toMatchObject({
-                id: "registro-1",
-                descricao: "Salário atualizado",
-                valor: 3500,
-            });
-        });
+    it("falha com segurança se um registro referenciar categoria incompatível", async () => {
+        const inválido = { ...registro, categoriaId: "alimentacao" };
+        localStorage.setItem("controle-financeiro.registros", JSON.stringify({ versao: 3, registros: [inválido] }));
+        const hook = montarProvider();
+        await waitFor(() => expect(hook.result.current?.statusPersistencia).toBe("erro"));
+        expect(hook.result.current?.registros).toEqual([]);
+        expect(localStorage.getItem("controle-financeiro.registros")).toContain("alimentacao");
     });
 
-    // EXCLUSÃO
-    it("deve persistir a exclusão de um registro", async () => {
-        localStorage.setItem(
-            "registros",
-            JSON.stringify([registroSalvo])
-        );
-
-        const { result } = renderHook(
-            () => useContext(context),
-            { wrapper }
-        );
-
-        await waitFor(() => {
-            expect(result.current?.registros).toHaveLength(1);
-        });
-
-        act(() => {
-            result.current?.deletarRegistro("registro-1");
-        });
-
-        await waitFor(() => {
-            const registrosSalvos = JSON.parse(
-                localStorage.getItem("registros") || "[]"
-            );
-
-            expect(registrosSalvos).toHaveLength(0);
-        });
+    it("persiste operações nas chaves atuais e não na chave legada", async () => {
+        const hook = montarProvider();
+        await esperarPronto(hook.result);
+        await act(async () => { await hook.result.current!.adicionarRegistro({ tipo: "receita", categoriaId: "salario", descricao: "Salário", valor: 100, data: "2026-11-19" }); });
+        expect(JSON.parse(localStorage.getItem("controle-financeiro.registros") ?? "null").registros).toHaveLength(1);
+        expect(localStorage.getItem("registros")).toBeNull();
     });
-
-    // DADOS INVÁLIDOS
-    it("deve ignorar registros inválidos durante a recuperação", async () => {
-        const dados = [
-            registroSalvo,
-            {
-                id: "",
-                tipo: "despesa",
-                descricao: "Mercado",
-                valor: 200,
-            },
-            {
-                id: "registro-3",
-                tipo: "despesa",
-                descricao: "Conta de luz",
-                valor: -100,
-            },
-        ];
-
-        localStorage.setItem("registros", JSON.stringify(dados));
-
-        const { result } = renderHook(
-            () => useContext(context),
-            { wrapper }
-        );
-
-        await waitFor(() => {
-            expect(result.current?.registros).toHaveLength(1);
-        });
-
-        expect(result.current?.registros[0]).toEqual(registroSalvo);
-
-        await waitFor(() => {
-            const registrosSalvos = JSON.parse(
-                localStorage.getItem("registros") || "[]"
-            );
-
-            expect(registrosSalvos).toHaveLength(1);
-        });
-    });
-
-    // JSON CORROMPIDO
-    it("não deve sobrescrever os dados quando o JSON estiver corrompido", () => {
-        const dadosCorrompidos = "{ registros inválidos ";
-
-        localStorage.setItem("registros", dadosCorrompidos);
-
-        const consoleError = jest
-            .spyOn(console, "error")
-            .mockImplementation(() => {});
-
-        try {
-            renderHook(
-                () => useContext(context),
-                { wrapper }
-            );
-
-            expect(localStorage.getItem("registros")).toBe(
-                dadosCorrompidos
-            );
-
-        } finally {
-            consoleError.mockRestore();
-        }
-    });
-
-    it("deve tratar erros durante a leitura do localStorage", () => {
-        const consoleError = jest
-            .spyOn(console, "error")
-            .mockImplementation(() => {});
-
-        jest.spyOn(Storage.prototype, "getItem")
-            .mockImplementation(() => {
-                throw new Error("Falha na leitura");
-            });
-
-        try {
-            const { result } = renderHook(
-                () => useContext(context),
-                { wrapper }
-            );
-
-            expect(result.current?.registros).toHaveLength(0);
-            expect(consoleError).toHaveBeenCalled();
-
-        } finally {
-            consoleError.mockRestore();
-        }
-    });
-
-    it("deve tratar erros durante a gravação no localStorage", () => {
-        const consoleError = jest
-            .spyOn(console, "error")
-            .mockImplementation(() => {});
-
-        jest.spyOn(Storage.prototype, "setItem")
-            .mockImplementation(() => {
-                throw new Error("Falha na gravação");
-            });
-
-        try {
-            const { result } = renderHook(
-                () => useContext(context),
-                { wrapper }
-            );
-
-            act(() => {
-                result.current?.adicionarRegistro({
-                    tipo: "despesa",
-                    descricao: "Mercado",
-                    valor: 500,
-                });
-            });
-
-            expect(result.current?.registros).toHaveLength(1);
-            expect(consoleError).toHaveBeenCalled();
-
-        } finally {
-            consoleError.mockRestore();
-        }
-    });
-
-    it("deve ignorar registros com IDs duplicados", async () => {
-        const registrosDuplicados = [
-            registroSalvo,
-            {
-                id: "registro-1",
-                tipo: "despesa",
-                descricao: "Mercado",
-                valor: 500,
-            },
-        ];
-
-        localStorage.setItem(
-            "registros",
-            JSON.stringify(registrosDuplicados)
-        );
-
-        const { result } = renderHook(
-            () => useContext(context),
-            { wrapper }
-        );
-
-        await waitFor(() => {
-            expect(result.current?.registros).toHaveLength(1);
-        });
-
-        expect(result.current?.registros[0].descricao).toBe("Salário");
-
-        await waitFor(() => {
-            const registrosSalvos = JSON.parse(
-                localStorage.getItem("registros") || "[]"
-            );
-
-            expect(registrosSalvos).toHaveLength(1);
-        });
-    });
-
-    it("não deve sobrescrever dados quando o JSON não representar uma lista", () => {
-        const dadosInvalidos = JSON.stringify({
-            nome: "Victor",
-            valor: 3000,
-        });
-
-        localStorage.setItem("registros", dadosInvalidos);
-
-        const consoleError = jest
-            .spyOn(console, "error")
-            .mockImplementation(() => {});
-
-        try {
-            const { result } = renderHook(
-                () => useContext(context),
-                { wrapper }
-            );
-
-            expect(result.current?.registros).toHaveLength(0);
-
-            expect(localStorage.getItem("registros")).toBe(
-                dadosInvalidos
-            );
-
-        } finally {
-            consoleError.mockRestore();
-        }
-    });
-
-    it("deve iniciar com uma lista vazia quando não existem registros salvos", async () => {
-        const { result } = renderHook(
-            () => useContext(context),
-            { wrapper }
-        );
-
-        expect(result.current?.registros).toHaveLength(0);
-
-        await waitFor(() => {
-            expect(localStorage.getItem("registros")).toBe("[]");
-        });
-    });
-
-    it("deve recuperar corretamente uma lista vazia", async () => {
-
-        localStorage.setItem("registros", JSON.stringify([]));
-
-        const { result } = renderHook(
-            () => useContext(context),
-            { wrapper }
-        );
-
-        await waitFor(() => {
-            expect(result.current?.registros).toEqual([]);
-        });
-    });
-
-    it("não deve adicionar registros quando ocorrer erro de leitura", () => {
-        const { dadosOriginais, getItemSpy, setItemSpy } =
-            prepararFalhaDeLeitura();
-
-        const { result } = renderHook(() => useContext(context), { wrapper });
-
-        act(() => {
-            result.current?.adicionarRegistro({
-                tipo: "receita",
-                descricao: "Salário",
-                valor: 5000,
-            });
-        });
-
-        expect(result.current?.registros).toEqual([]);
-        expect(setItemSpy).not.toHaveBeenCalled();
-
-        getItemSpy.mockRestore();
-
-        expect(localStorage.getItem("registros")).toBe(dadosOriginais);
-    });
-
-    it("não deve atualizar registros quando ocorrer erro de leitura", () => {
-        const { dadosOriginais, getItemSpy, setItemSpy } =
-            prepararFalhaDeLeitura();
-
-        const { result } = renderHook(() => useContext(context), { wrapper });
-
-        act(() => {
-            result.current?.atualizarRegistro("registro-1", {
-                tipo: "receita",
-                descricao: "Salário atualizado",
-                valor: 6000,
-            });
-        });
-
-        expect(result.current?.registros).toEqual([]);
-        expect(setItemSpy).not.toHaveBeenCalled();
-
-        getItemSpy.mockRestore();
-
-        expect(localStorage.getItem("registros")).toBe(dadosOriginais);
-    });
-
-    it("não deve excluir registros quando ocorrer erro de leitura", () => {
-        const { dadosOriginais, getItemSpy, setItemSpy } =
-            prepararFalhaDeLeitura();
-
-        const { result } = renderHook(() => useContext(context), { wrapper });
-
-        act(() => {
-            result.current?.deletarRegistro("registro-1");
-        });
-
-        expect(result.current?.registros).toEqual([]);
-        expect(setItemSpy).not.toHaveBeenCalled();
-
-        getItemSpy.mockRestore();
-
-        expect(localStorage.getItem("registros")).toBe(dadosOriginais);
-    });
-
 });
